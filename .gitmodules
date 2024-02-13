@@ -1,0 +1,3 @@
+[submodule "blinkist"]
+	path = blinkist
+	url = https://github.com/NicoWeio/blinkist.git
