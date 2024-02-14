@@ -1,0 +1,305 @@
+#!/usr/bin/env ruby
+
+require "yaml"
+require "fileutils"
+require 'digest'
+require 'parallel'
+require 'redis-mutex'
+require 'byebug'
+require "dotenv"
+require 'curb'
+require 'shellwords'
+require 'zaru'
+
+Dotenv.load
+
+RedisClassy.redis = Redis.new
+
+class Loader
+  attr_reader :slug
+
+  def initialize(slug)
+    @slug = slug
+  end
+
+  def with_lock(file_name)
+    RedisMutex.with_lock(file_name, block: 1, expire: 600) do
+      yield
+    end
+  end
+
+  def main
+    prepare_dirs
+    copy_to_music_app
+  end
+
+  def shared_tmp
+    "tmp"
+  end
+
+  def storage_dir
+    File.expand_path("storage/#{slug}", __dir__)
+  end
+
+  def blink_storage_dir
+    File.expand_path("storage/#{slug}/blinklist", __dir__)
+  end
+
+  def gpt_storage_path
+    File.expand_path("storage/#{slug}/gpt", __dir__)
+  end
+
+  def prepare_dirs
+    FileUtils.mkdir_p(storage_dir)
+    FileUtils.mkdir_p(blink_storage_dir)
+    FileUtils.mkdir_p(gpt_storage_path)
+  end
+
+  def system(cmd)
+    res = Kernel.system(%[bash -l -c #{Shellwords.escape(cmd)}])
+    unless res
+      puts "Failed to execute cmd"
+      puts "="*80
+      puts cmd
+      debugger
+      raise "Failed to execute cmd"
+    end
+  end
+
+  def create_all_voices(audios)
+    puts "Create all voices"
+    parallel_map(audios) do |audio|
+      print "."
+      begin
+        arr = [create_voice(audio, key: "word")]
+        arr << create_voice(audio, key: "explanation") if audio["explanation"]
+        arr
+      rescue RedisMutex::LockError
+        nil
+      end
+    end
+  end
+
+  def create_all_images(audios)
+    puts "Create all images"
+    parallel_map(audios) do |audio|
+      print "."
+      begin
+        create_image(audio)
+      rescue RedisMutex::LockError
+        nil
+      end
+    end
+  end
+
+
+  def final_en_file_name
+    File.expand_path("#{slug}-en.m4a", blink_storage_dir)
+  end
+
+  def copy_to_music_app
+    en_path = merge_blink_audio
+    # vi_path = generate_vi_blink_audio
+    system "osascript MusicUpload.scpt Books #{Shellwords.escape(en_path)}"
+    # system "osascript MusicUpload.scpt Books #{Shellwords.escape(vi_path)}"
+  end
+
+  def merge_blink_audio
+    unless File.exist?(final_en_file_name)
+      download_blink
+
+      audio_file_names = sort_blink_audio(Dir["#{blink_storage_dir}/#{slug}/*.m4a"])
+      source_input_filename = File.expand_path("en_mp4.txt", storage_dir)
+      File.write(source_input_filename, audio_file_names.map { |name| "file '#{name}'" }.join("\n"))
+      cmd = "ffmpeg -f concat -safe 0 -i '#{source_input_filename}' -c copy '#{final_en_file_name}'"
+      system(cmd)
+    end
+
+    final_en_file_name
+  end
+
+  def download_blink
+    unless File.exist?(File.expand_path("#{slug}/book.md", blink_storage_dir))
+      Dir.chdir(File.expand_path("blinkist", __dir__)) do
+        system "./main.py --book-slug #{slug} #{blink_storage_dir}"
+      end
+    end
+  end
+
+  def sort_blink_audio(files)
+    files.sort_by { |name| File.basename(name, File.extname(name)).split("_").last.to_i }
+  end
+
+  def audios
+    @audios ||= load_audios
+  end
+
+  def hexdigest(msg)
+    Digest::MD5.hexdigest(msg)[0, 12]
+  end
+
+  def load_audios
+    audios = YAML.load(File.open("#{slug}/deck.yml"))
+    all_msgs = []
+    prev_audio = nil
+    audios.each do |audio|
+      all_msgs << [audio["word"], audio["language"]].join("-")
+      audio["digest"] = hexdigest(audio["word"] + "-" + audio["language"])
+      audio["full_digest"] = hexdigest(all_msgs.join("; "))
+    end
+
+    audios
+  end
+
+  def reparse_time(time)
+    seconds = time/60
+    minutes = seconds / 60
+    seconds = seconds % 60
+    "00:%02d:%02d" % [minutes, seconds]
+  end
+
+  def audio_name(audio, include_time: false)
+    parts = [
+      audio["word"][0, 15],
+      audio["language"]
+    ]
+    parts.join("-")
+  end
+
+  def reencode_mp3(original_mp3_filename)
+    ts_filename = convert_to_ts(original_mp3_filename)
+    file_name = ts_filename + ".rencoded.mp3"
+    unless File.exist?(file_name)
+      with_lock(file_name) do
+        cmd = %{ffmpeg -i '#{ts_filename}' -ac 2 '#{file_name}' }
+        cmd = %{ffmpeg \
+          -i '#{ts_filename}' \
+          -filter:a 'volume=0.5' \
+          -ar 44100 -ac 2 '#{file_name}'
+        }
+
+        puts cmd
+        system cmd
+      end
+    end
+
+    file_name
+  end
+
+  LOCALE2TTSPARAMS = {
+    "vi" => "--language vi-VN --service gcp --voice vi-VN-Wavenet-D ",
+    "en" => "--language en-US --service gcp --voice en-US-Neural2-A "
+  }
+
+  def voice_base_name(audio, key: "word")
+    msg = audio[key]
+    locale = audio["language"]
+    digest = hexdigest(msg + "-" + locale)
+    Zaru.sanitize! "#{msg.strip[0..20]}-#{locale}-#{digest}.mp3"
+  end
+
+  def image_base_name(audio)
+    msg = audio["word"]
+    locale = audio["language"]
+    digest = hexdigest(msg + "-" + locale)
+    Zaru.sanitize! "#{msg[0..20]}-#{locale}-#{digest}.jpg"
+  end
+
+  def create_voice(audio, key: "word")
+    msg = audio[key]
+    locale = audio["language"]
+    digest = hexdigest(msg + "-" + locale)
+    file_name = File.expand_path("#{shared_tmp}/voices/#{voice_base_name(audio, key: key)}", __dir__)
+    unless File.exist?(file_name)
+      with_lock(file_name) do
+        puts "Creating #{file_name}"
+        puts "echo #{Shellwords.escape(msg)} | tts '#{file_name}' #{LOCALE2TTSPARAMS[locale]}"
+        system "echo #{Shellwords.escape(msg)} | tts '#{file_name}' #{LOCALE2TTSPARAMS[locale]}"
+      end
+    end
+
+    file_name
+  end
+
+  def create_image(audio)
+    return nil unless audio["image"]
+    file_name = File.expand_path("#{slug}/images/#{image_base_name(audio)}", __dir__)
+    unless File.exist?(file_name)
+      with_lock(file_name) do
+        if audio["url"]
+          downloader = GivenUrlImageDownloader.new(url: audio["url"], destination_path: file_name)
+        else
+          downloader = GoogleImageDownloader.new(query: audio["word"], destination_path: file_name)
+        end
+
+        downloader.perform_download
+      end
+    end
+
+    file_name
+  end
+end
+
+require 'google_custom_search_api'
+require 'open-uri'
+
+GoogleCustomSearchApi::GOOGLE_API_KEY = ENV["GOOGLE_API_KEY"]
+GoogleCustomSearchApi::GOOGLE_SEARCH_CX = ENV["GOOGLE_SEARCH_CX"]
+
+class GoogleImageDownloader
+  def initialize(query:, destination_path:)
+    @query = query
+    @destination_path = destination_path
+  end
+
+  def search_items
+    GoogleCustomSearchApi.search(@query, searchType: 'image', num: 10)['items']
+  end
+
+  def get_first_image_url(search_results)
+    items = search_results['items']
+    return nil if items.empty?
+
+    items.first['link']
+  end
+
+  def perform_download
+    search_items.each do |item|
+      image_url = item['link']
+      begin
+        puts "Downloading #{image_url}..."
+        open(@destination_path, 'wb') do |file|
+          file << URI.open(image_url).read
+        end
+        break
+      rescue (OpenURI::HTTPError)
+        puts "Error, try next file"
+        FileUtils.rm_f(@destination_path)
+      end
+    end
+  end
+end
+
+class GivenUrlImageDownloader
+  def initialize(url:, destination_path:)
+    @url = url
+    @destination_path = destination_path
+  end
+
+  def perform_download
+    puts "Downloading #{@url}..."
+    curl = Curl::Easy.new(@url) do |curl|
+      curl.follow_location = true
+      curl.connect_timeout = 30
+      curl.timeout = 300
+      curl.ssl_verify_peer = false # Set to true if you want to verify SSL certificates
+    end
+
+    open(@destination_path, 'wb') do |file|
+      curl.on_body { |data| file << data; data.size }
+      curl.perform
+    end
+  end
+end
+
+Loader.new(ARGV[0]).main
