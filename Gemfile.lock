@@ -7,6 +7,13 @@ GEM
     connection_pool (2.4.1)
     curb (1.0.5)
     dotenv (3.0.0)
+    event_stream_parser (1.0.0)
+    faraday (2.9.0)
+      faraday-net_http (>= 2.0, < 3.2)
+    faraday-multipart (1.0.4)
+      multipart-post (~> 2)
+    faraday-net_http (3.1.0)
+      net-http
     google_custom_search_api (2.0.0)
       addressable
       httparty
@@ -15,6 +22,9 @@ GEM
       multi_xml (>= 0.5.2)
     mini_mime (1.1.5)
     multi_xml (0.6.0)
+    multipart-post (2.4.0)
+    net-http (0.4.1)
+      uri
     parallel (1.24.0)
     public_suffix (5.0.4)
     redis (5.1.0)
@@ -27,7 +37,11 @@ GEM
       redis-classy (~> 2.0)
     redis-namespace (1.11.0)
       redis (>= 4)
-    zaru (1.0.0)
+    ruby-openai (6.3.1)
+      event_stream_parser (>= 0.3.0, < 2.0.0)
+      faraday (>= 1)
+      faraday-multipart (>= 1)
+    uri (0.13.0)
 
 PLATFORMS
   arm64-darwin-23
@@ -39,7 +53,7 @@ DEPENDENCIES
   google_custom_search_api
   parallel
   redis-mutex
-  zaru
+  ruby-openai
 
 BUNDLED WITH
    2.4.10
