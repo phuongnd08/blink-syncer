@@ -11,6 +11,8 @@ require 'curb'
 require 'shellwords'
 require 'zaru'
 require 'openai'
+require 'redcarpet'
+require 'redcarpet/render_strip'
 
 Dotenv.load
 
@@ -78,16 +80,23 @@ class Loader
   end
 
 
-  def final_en_file_name
+  def final_en_audio_file_name
     File.expand_path("#{slug}-en.m4a", blink_storage_dir)
   end
 
-  def final_vi_file_name
-    File.expand_path("#{slug}-vi.mp3", blink_storage_dir)
+  def final_vi_audio_file_name
+    File.expand_path("#{slug}-vi.mp3", storage_dir)
   end
 
   def final_vi_text_file_name
-    File.expand_path("#{slug}-vi.txt", blink_storage_dir)
+    File.expand_path("#{slug}-vi.txt", storage_dir)
+  end
+
+  def convert_markdown_to_plain_text(md)
+    Redcarpet::Markdown.new(Redcarpet::Render::StripDown).render(md).tap do |content|
+      puts "STRIPPED TEXT:"
+      puts content
+    end
   end
 
   def copy_to_music_app
@@ -100,17 +109,17 @@ class Loader
   end
 
   def merge_blink_audio
-    unless File.exist?(final_en_file_name)
+    unless File.exist?(final_en_audio_file_name)
       download_blink
 
       audio_file_names = sort_blink_audio(Dir["#{blink_storage_dir}/#{slug}/*.m4a"])
       source_input_filename = File.expand_path("en_mp4.txt", storage_dir)
       File.write(source_input_filename, audio_file_names.map { |name| "file '#{name}'" }.join("\n"))
-      cmd = "ffmpeg -f concat -safe 0 -i '#{source_input_filename}' -c copy '#{final_en_file_name}'"
+      cmd = "ffmpeg -f concat -safe 0 -i '#{source_input_filename}' -c copy '#{final_en_audio_file_name}'"
       system(cmd)
     end
 
-    final_en_file_name
+    final_en_audio_file_name
   end
 
   def download_blink
@@ -126,14 +135,14 @@ class Loader
   end
 
   def generate_vi_blink_audio
-    unless File.exist?(final_vi_file_name)
+    unless File.exist?(final_vi_audio_file_name)
       download_blink
       translate_blink_to_vi
-      cmd = "cat #{Shellwords.escape(final_vi_text_file_name)} | tts #{Shellwords.escape(final_vi_file_name)} #{LOCALE2TTSPARAMS['vi']}"
+      cmd = "cat #{Shellwords.escape(final_vi_text_file_name)} | tts #{Shellwords.escape(final_vi_audio_file_name)} #{LOCALE2TTSPARAMS['vi']}"
       system cmd
     end
 
-    final_vi_file_name
+    final_vi_audio_file_name
   end
 
   def translated_text_vi_file_name
@@ -146,7 +155,7 @@ class Loader
 
   def normalized_en_content
     text_en_file_name = blink_storage_dir + "/#{slug}/book.md"
-    File.read(text_en_file_name).gsub("## Blink", "## Chapter")
+    convert_markdown_to_plain_text(File.read(text_en_file_name).gsub("## Blink", "## Chapter"))
   end
 
   def normalized_en_content_segments

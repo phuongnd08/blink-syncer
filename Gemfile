@@ -7,3 +7,5 @@ gem "google_custom_search_api"
 gem "dotenv"
 gem 'curb'
 gem 'ruby-openai'
+gem 'kramdown'
+gem 'redcarpet'

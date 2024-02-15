@@ -20,6 +20,8 @@ GEM
     httparty (0.21.0)
       mini_mime (>= 1.0.0)
       multi_xml (>= 0.5.2)
+    kramdown (2.4.0)
+      rexml
     mini_mime (1.1.5)
     multi_xml (0.6.0)
     multipart-post (2.4.0)
@@ -27,6 +29,7 @@ GEM
       uri
     parallel (1.24.0)
     public_suffix (5.0.4)
+    redcarpet (3.6.0)
     redis (5.1.0)
       redis-client (>= 0.17.0)
     redis-classy (2.4.1)
@@ -37,6 +40,7 @@ GEM
       redis-classy (~> 2.0)
     redis-namespace (1.11.0)
       redis (>= 4)
+    rexml (3.2.6)
     ruby-openai (6.3.1)
       event_stream_parser (>= 0.3.0, < 2.0.0)
       faraday (>= 1)
@@ -51,7 +55,9 @@ DEPENDENCIES
   curb
   dotenv
   google_custom_search_api
+  kramdown
   parallel
+  redcarpet
   redis-mutex
   ruby-openai
 
